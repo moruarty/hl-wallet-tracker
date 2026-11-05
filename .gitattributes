@@ -1,0 +1,2 @@
+# Keep LF everywhere: a CRLF in a deploy script breaks it on the Linux VM.
+* text=auto eol=lf
