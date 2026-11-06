@@ -16,4 +16,4 @@ fi
 git push origin main
 
 # Kept on one line so it survives being passed through gcloud and PuTTY on Windows.
-gcloud compute ssh "$VM" --zone "$ZONE" --command "cd /opt/hl-wallet-tracker && sudo -u hltracker git pull --ff-only && sudo -u hltracker .venv/bin/pip install --quiet --no-cache-dir -r requirements.txt && sudo cp deploy/hl-tracker.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart hl-tracker && sleep 5 && sudo systemctl is-active hl-tracker || { sudo journalctl -u hl-tracker -n 30 --no-pager; exit 1; }"
+gcloud compute ssh "$VM" --zone "$ZONE" --command "cd /opt/hl-wallet-tracker && sudo -u hltracker git pull --ff-only && sudo -u hltracker .venv/bin/pip install --quiet --no-cache-dir -r requirements.txt && sudo cp deploy/hl-tracker.service deploy/hl-tracker-monitor.service deploy/hl-tracker-monitor.timer /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now hl-tracker-monitor.timer && sudo systemctl restart hl-tracker && sleep 5 && sudo systemctl is-active hl-tracker || { sudo journalctl -u hl-tracker -n 30 --no-pager; exit 1; }"

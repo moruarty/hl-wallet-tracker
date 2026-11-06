@@ -62,6 +62,17 @@ sudo systemctl enable --now hl-tracker
 sudo journalctl -u hl-tracker -n 30 --no-pager
 ```
 
+**Downtime alerts:** a monitor on the VM checks the bot every minute and posts to `DISCORD_WEBHOOK_URL` from
+the VM's `.env` if it's down for two checks in a row, if it's still down each hour after that, if it crashes
+and restarts, and when it recovers. `disable --now` counts as turning it off on purpose, so that doesn't alert,
+but a plain `systemctl stop` does. Running on the same VM, it can't report the whole VM being down, and it
+checks that the process is running rather than that messages are getting through. To send a test message, on
+the VM:
+
+```bash
+cd /opt/hl-wallet-tracker && sudo -u hltracker .venv/bin/python -m tracker.monitor --test
+```
+
 **To test before deploying,** on your machine:
 
 ```bash
@@ -146,7 +157,8 @@ tracker/
   hyperliquid.py  websocket + info API clients
   formatting.py   message formatting
   storage.py      SQLite wallet list
-deploy/           systemd unit and sync.sh
+  monitor.py      Discord downtime alerts, run by a systemd timer
+deploy/           systemd units and sync.sh
 tests/            engine, formatting and Telegram command tests
 ```
 
@@ -155,4 +167,4 @@ tests/            engine, formatting and Telegram command tests
 - Funding payments and liquidation alerts via the `userEvents` channel
 - Filters per wallet (only fills, minimum notional, specific coins)
 - More HIP-3 dexes in `/orders` and `/positions`
-- Polling fallback to track more than 10 wallets
+- Replace the websockets with REST polling to track more than 10 wallets

@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the Hyperliquid wallet tracker and alert Discord if it's down
+
+[Service]
+Type=oneshot
+User=hltracker
+WorkingDirectory=/opt/hl-wallet-tracker
+ExecStart=/opt/hl-wallet-tracker/.venv/bin/python -m tracker.monitor
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/hl-wallet-tracker/data
+PrivateTmp=true
