@@ -13,6 +13,7 @@ class Config:
     hl_api_url: str
     hl_ws_url: str
     log_level: str
+    binance_poll_interval: float = 15.0
 
 
 def load_config() -> Config:
@@ -37,4 +38,5 @@ def load_config() -> Config:
         hl_api_url=os.getenv("HL_API_URL", "https://api.hyperliquid.xyz").rstrip("/"),
         hl_ws_url=os.getenv("HL_WS_URL", "wss://api.hyperliquid.xyz/ws"),
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        binance_poll_interval=max(float(os.getenv("BINANCE_POLL_SECONDS", "15")), 5.0),
     )

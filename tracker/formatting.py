@@ -5,6 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, localcontext
 
+from .binance import PROFILE_URL as BINANCE_PROFILE_URL, direction as binance_direction
 from .engine import OrderEvent
 
 ADDRESS_URL = "https://hypurrscan.io/address/{}"
@@ -316,6 +317,41 @@ def format_positions(label: str, address: str, states: list[dict], coin_name) ->
     for p in positions:
         lines.append("")
         lines.append(format_position(p, coin_name))
+    return split_message(lines)
+
+
+def binance_link(label: str, portfolio_id: str) -> str:
+    return f'<a href="{BINANCE_PROFILE_URL.format(portfolio_id)}"><b>{html.escape(label)}</b> · Binance</a>'
+
+
+def _delay(seconds: float) -> str:
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    if seconds < 5400:
+        return f"{seconds / 60:.0f} min"
+    return f"{seconds / 3600:.1f} h"
+
+
+def format_binance_trade(t: dict) -> str:
+    notional = t["qty"] * t["price"]
+    head = (
+        f"{'📈' if t['side'] == 'BUY' else '📉'} <b>{binance_direction(t['side'], t['position_side'])} {num(t['qty'])} "
+        f"{html.escape(t['base'])}</b> @ <b>{_price(t['price'])}</b>"
+    )
+    details = [f"<b>${num(notional, 2)}</b>"]
+    if t["pnl"] != 0:
+        details.append(_pnl(t["pnl"]))
+    if t["type"]:
+        details.append(html.escape(t["type"].lower()))
+    if t["more"]:
+        details.append("more of an earlier order")
+    details.append("made while the bot was offline" if t["missed"] else f"seen after {_delay(t['delay'])}")
+    return head + "\n      " + " · ".join(details)
+
+
+def format_binance_update(label: str, portfolio_id: str, trades: list[dict]) -> list[str]:
+    lines = [binance_link(label, portfolio_id), "", f"<u>Trades ({len(trades)})</u>"]
+    lines.extend(format_binance_trade(t) for t in trades)
     return split_message(lines)
 
 

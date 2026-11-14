@@ -118,6 +118,9 @@ Access is gated by chat ID: commands only work in chats listed in `ALLOWED_CHAT_
 | `/listwallets` | Wallets tracked in this chat. |
 | `/orders [wallet or label]` | Current open orders (all tracked wallets if no argument). |
 | `/positions [wallet or label]` | Current perp positions with entry, mark, value, PnL and liquidation price. |
+| `/track_binance <name, ID or link> [label]` | Track a Binance copy-trading lead trader by exact name, portfolio ID or profile link. |
+| `/untrack_binance <ID or label>` | Stop tracking a Binance trader in this chat. |
+| `/binance_delay` | How long Binance trades take to reach the bot: typical, 9 in 10, and slowest. |
 | `/chatid` | Shows the chat's ID. Works in any chat so you can set up `ALLOWED_CHAT_IDS`. |
 | `/help` | Command list. |
 
@@ -133,6 +136,19 @@ Each chat has its own wallet list and labels. If two chats track the same wallet
 - On connect, existing open orders and the fill snapshot are loaded silently, so you aren't flooded
   with history. After a reconnect, fills, new orders and cancels from the gap are reported.
 - Tracked wallets are stored in SQLite (`data/tracker.db`).
+
+**Binance lead traders**
+
+- Binance has no official API for following other traders, so `tracker/binance.py` uses the undocumented
+  endpoints behind binance.com's copy-trading pages. They can change or be blocked without warning.
+- Each trader's completed trades are checked every 15 s (`BINANCE_POLL_SECONDS`), one trader at a time,
+  because bursts of requests get a "system busy" reply. The bot tracks up to 20 traders.
+- Only completed trades are public: pending orders and TP/SL aren't, and open positions only when the trader
+  shows them. Each alert says how long after the trade it was seen; every delay is also written to
+  `data/binance_latency.csv`, and `/binance_delay` summarises them.
+- Trades made while the bot was offline (up to a day back) are reported after a restart, marked as such.
+- Binance's official API refuses US addresses, including a US-region VM. The copy-trading endpoints
+  worked from one when this was written, but that could change.
 
 **Limits**
 
@@ -157,6 +173,7 @@ tracker/
   hyperliquid.py  websocket + info API clients
   formatting.py   message formatting
   storage.py      SQLite wallet list
+  binance.py      Binance copy-trading lead traders: client and trade poller
   monitor.py      Discord downtime alerts, run by a systemd timer
 deploy/           systemd units and sync.sh
 tests/            engine, formatting and Telegram command tests

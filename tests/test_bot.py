@@ -104,7 +104,7 @@ def test_label_with_html_is_escaped(bot):
 def test_each_chat_has_its_own_list(bot):
     run_cmd(bot.cmd_track, ALLOWED, WALLET, "mine")
     run_cmd(bot.cmd_list, OTHER)
-    assert "No wallets" in reply_text(bot)
+    assert "Nothing tracked" in reply_text(bot)
     run_cmd(bot.cmd_untrack, OTHER, "mine")
     assert "No tracked wallet" in reply_text(bot)
     assert len(bot.storage.all()) == 1

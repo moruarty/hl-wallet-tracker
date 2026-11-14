@@ -11,10 +11,12 @@ from telegram.constants import ParseMode
 from telegram.error import Forbidden, RetryAfter, TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, filters
 
+from .binance import BinanceClient, BinanceError, BinancePoller, latency_summary
 from .config import Config
 from .engine import Engine, OrderEvent
 from .formatting import (
-    CoinNames, format_open_orders, format_order_details, format_positions, format_update, short_addr, wallet_link,
+    CoinNames, binance_link, format_binance_update, format_open_orders, format_order_details, format_positions,
+    format_update, short_addr, wallet_link,
 )
 from .hyperliquid import InfoClient
 from .storage import Storage
@@ -22,7 +24,10 @@ from .storage import Storage
 log = logging.getLogger(__name__)
 
 ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+# A Binance lead trader's ID on its own, or at the end of a copy-trading profile link.
+BINANCE_ID_RE = re.compile(r"(?:^|lead-details/)(\d{15,25})(?:$|[/?#])")
 MAX_WALLETS = 10  # Hyperliquid: max 10 unique users in websocket user subscriptions per IP
+MAX_BINANCE_TRADERS = 20  # each one is a request per check, and Binance answers bursts with "system busy"
 SHOW_ALL_PREFIX = "all:"
 MAX_SAVED_LISTS = 200  # "Show all" lists kept in memory; older buttons stop working
 
@@ -33,9 +38,13 @@ HELP = (
     "/listwallets · wallets tracked in this chat\n"
     "/orders [wallet or label] · current open orders\n"
     "/positions [wallet or label] · current open positions\n"
+    "/track_binance &lt;name, ID or profile link&gt; [label] · track a Binance copy-trading lead trader\n"
+    "/untrack_binance &lt;ID or label&gt; · stop tracking a Binance trader\n"
+    "/binance_delay · how long Binance trades take to show up\n"
     "/chatid · show this chat's ID\n\n"
-    "You'll get new/canceled/triggered orders (limits, take profits, stop losses) and fills, "
-    "batched every few seconds."
+    "Hyperliquid: new/canceled/triggered orders (limits, take profits, stop losses) and fills, "
+    "batched every few seconds.\n"
+    "Binance: completed trades, checked every few seconds. Pending orders aren't visible there."
 )
 
 
@@ -47,6 +56,8 @@ class TrackerBot:
         self.coin_names = CoinNames()
         self._saved_lists: OrderedDict[str, tuple[int, list[str]]] = OrderedDict()
         self.engine = Engine(self.info, cfg.hl_ws_url, self.notify, cfg.batch_interval)
+        self.binance = BinanceClient()
+        self.binance_poller = BinancePoller(self.binance, self.notify_binance, self.storage, cfg.binance_poll_interval)
         self.app = (
             Application.builder()
             .token(cfg.bot_token)
@@ -58,7 +69,8 @@ class TrackerBot:
         for name, fn in [
             ("start", self.cmd_help), ("help", self.cmd_help), ("track", self.cmd_track),
             ("untrack", self.cmd_untrack), ("listwallets", self.cmd_list), ("orders", self.cmd_orders),
-            ("positions", self.cmd_positions),
+            ("positions", self.cmd_positions), ("track_binance", self.cmd_track_binance),
+            ("untrack_binance", self.cmd_untrack_binance), ("binance_delay", self.cmd_binance_delay),
         ]:
             self.app.add_handler(CommandHandler(name, fn, filters=allowed))
         # /chatid works everywhere so you can find the ID to put in ALLOWED_CHAT_IDS.
@@ -81,16 +93,27 @@ class TrackerBot:
             BotCommand("listwallets", "List tracked wallets"),
             BotCommand("orders", "Open orders: /orders [wallet or label]"),
             BotCommand("positions", "Open positions: /positions [wallet or label]"),
+            BotCommand("track_binance", "Track a Binance lead trader: /track_binance <name, ID or link> [label]"),
+            BotCommand("untrack_binance", "Stop tracking a Binance trader: /untrack_binance <ID or label>"),
+            BotCommand("binance_delay", "How long Binance trades take to show up"),
             BotCommand("chatid", "Show this chat's ID"),
             BotCommand("help", "Help"),
         ])
         self.engine.start()
         await self._sync()
-        log.info("Bot started; tracking %d wallet(s)", len({w.address for w in self.storage.all()}))
+        self._sync_binance()
+        self.binance_poller.start()
+        log.info("Bot started; tracking %d wallet(s) and %d Binance trader(s)",
+                 len({w.address for w in self.storage.all()}), len({t.address for t in self.storage.all_binance()}))
 
     async def _post_shutdown(self, app: Application) -> None:
         await self.engine.stop()
+        await self.binance_poller.stop()
         await self.info.close()
+        await self.binance.close()
+
+    def _sync_binance(self) -> None:
+        self.binance_poller.sync({t.address for t in self.storage.all_binance()})
 
     async def _sync(self) -> None:
         await self.engine.sync({w.address for w in self.storage.all()})
@@ -105,6 +128,13 @@ class TrackerBot:
             button = self._show_all_button(w.chat_id, details) if details else None
             for i, text in enumerate(pages):
                 await self._send(w.chat_id, text, reply_markup=button if i == len(pages) - 1 else None)
+
+    async def notify_binance(self, portfolio_id: str, trades: list[dict]) -> None:
+        for t in self.storage.all_binance():
+            if t.address != portfolio_id or t.chat_id not in self.cfg.allowed_chat_ids:
+                continue
+            for text in format_binance_update(t.label, portfolio_id, trades):
+                await self._send(t.chat_id, text)
 
     def _show_all_button(self, chat_id: int, pages: list[str]) -> InlineKeyboardMarkup:
         """Save the full list and return a button that sends it. Lists are lost on restart."""
@@ -207,12 +237,111 @@ class TrackerBot:
 
     async def cmd_list(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         wallets = self.storage.list_for_chat(update.effective_chat.id)
-        if not wallets:
-            await self._reply(update, "No wallets tracked in this chat. Use /track &lt;wallet&gt; [label].")
+        traders = self.storage.binance_for_chat(update.effective_chat.id)
+        if not wallets and not traders:
+            await self._reply(update, "Nothing tracked in this chat. Use /track &lt;wallet&gt; [label] or "
+                                      "/track_binance &lt;name, ID or link&gt; [label].")
             return
-        lines = [f"<b>Tracked wallets ({len(wallets)})</b>"]
-        lines += [f"• {wallet_link(w.label, w.address)}\n  <code>{w.address}</code>" for w in wallets]
+        lines = []
+        if wallets:
+            lines.append(f"<b>Tracked wallets ({len(wallets)})</b>")
+            lines += [f"• {wallet_link(w.label, w.address)}\n  <code>{w.address}</code>" for w in wallets]
+        if traders:
+            if lines:
+                lines.append("")
+            lines.append(f"<b>Binance traders ({len(traders)})</b>")
+            lines += [f"• {binance_link(t.label, t.address)}\n  <code>{t.address}</code>" for t in traders]
         await self._reply(update, "\n".join(lines))
+
+    async def _find_binance_trader(self, update: Update, args: list[str]) -> tuple[str, str, str] | None:
+        """(portfolio ID, nickname, label) for a name, ID or link. Replies and returns None if there's no match."""
+        id_match = BINANCE_ID_RE.search(args[0])
+        if id_match:
+            pid, label = id_match.group(1), " ".join(args[1:]).strip()
+            try:
+                detail = await self.binance.detail(pid)
+            except BinanceError:
+                detail = {}
+            if not detail.get("nickname"):
+                await self._reply(update, f"Binance has no lead trader with ID <code>{pid}</code>.")
+                return None
+            return pid, detail["nickname"], label or detail["nickname"]
+        # A name can contain spaces, so try all the words as the name before the first word with a label.
+        for name, label in ((" ".join(args), ""), (args[0], " ".join(args[1:]))):
+            results = await self.binance.search(name.strip())
+            exact = [t for t in results if t.get("nickname", "").lower() == name.strip().lower()]
+            if exact:
+                return exact[0]["leadPortfolioId"], exact[0]["nickname"], label.strip() or exact[0]["nickname"]
+            if len(args) == 1:
+                break
+        if results:
+            names = "\n".join(f"• {html.escape(t['nickname'])} · <code>{t['leadPortfolioId']}</code>" for t in results[:5])
+            await self._reply(update, f"No trader is called exactly that. Close matches:\n{names}\n\n"
+                                      "Use /track_binance with the ID to pick one.")
+        else:
+            await self._reply(update, "No Binance lead trader matches that name.")
+        return None
+
+    async def cmd_track_binance(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not ctx.args:
+            await self._reply(update, "Usage: /track_binance &lt;name, ID or profile link&gt; [label]")
+            return
+        try:
+            found = await self._find_binance_trader(update, ctx.args)
+        except Exception:
+            log.exception("Binance lookup failed")
+            await self._reply(update, "Couldn't reach Binance right now. Try again in a minute.")
+            return
+        if found is None:
+            return
+        pid, nickname, label = found
+        chat_id = update.effective_chat.id
+        if self.storage.binance_label_taken(chat_id, label, pid):
+            await self._reply(update, f"The label <b>{html.escape(label)}</b> is already used in this chat.")
+            return
+        tracked = {t.address for t in self.storage.all_binance()}
+        if pid not in tracked and len(tracked) >= MAX_BINANCE_TRADERS:
+            await self._reply(update, f"The bot tracks at most {MAX_BINANCE_TRADERS} Binance traders. Untrack one first.")
+            return
+        is_new = self.storage.track_binance(chat_id, pid, label)
+        self._sync_binance()
+        verb = "Now tracking" if is_new else "Updated label for"
+        text = (f"{verb} {binance_link(label, pid)} (<code>{pid}</code>).\n"
+                f"New trades are checked every {self.cfg.binance_poll_interval:g} seconds.")
+        try:
+            if not (await self.binance.detail(pid)).get("positionShow"):
+                text += f"\n{html.escape(nickname)} hides open positions, so you'll see completed trades only."
+        except Exception:
+            pass
+        await self._reply(update, text)
+
+    async def cmd_untrack_binance(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not ctx.args:
+            await self._reply(update, "Usage: /untrack_binance &lt;ID or label&gt;")
+            return
+        removed = self.storage.untrack_binance(update.effective_chat.id, " ".join(ctx.args))
+        if not removed:
+            await self._reply(update, "No Binance trader in this chat matches that.")
+            return
+        still_tracked = {t.address for t in self.storage.all_binance()}
+        for t in removed:
+            if t.address not in still_tracked:
+                self.storage.clear_binance_cursor(t.address)
+        self._sync_binance()
+        names = ", ".join(f"<b>{html.escape(t.label)}</b>" for t in removed)
+        await self._reply(update, f"Stopped tracking {names}.")
+
+    async def cmd_binance_delay(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        stats = latency_summary()
+        if stats is None:
+            await self._reply(update, "No Binance trades seen yet, so there's no delay to report.")
+            return
+        await self._reply(update, (
+            f"<b>Binance delay</b> over the last {stats['count']} trade(s): time from the trade to the bot seeing it\n"
+            f"Typical <b>{stats['median']:.0f}s</b> · 9 in 10 within <b>{stats['p90']:.0f}s</b> · "
+            f"slowest <b>{stats['max']:.0f}s</b>\n"
+            f"Checks run every {self.cfg.binance_poll_interval:g}s, which accounts for up to that much of the delay."
+        ))
 
     async def _matching_wallets(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> list:
         """The wallet named in the command, or all of this chat's wallets. Replies if there are none."""
