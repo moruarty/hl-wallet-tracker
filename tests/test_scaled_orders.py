@@ -88,7 +88,7 @@ def test_name_and_address_link_to_hypurrscan():
     url = f"https://hypurrscan.io/address/{WALLET}"
     assert ADDRESS_URL.format(WALLET) == url
     text = format_open_orders("big <whale>", WALLET, [], NAMES)[0]
-    assert text.startswith(f'<a href="{url}"><b>big &lt;whale&gt;</b> · 0xabab…abab</a>')
+    assert text.startswith(f'<a href="{url}"><b>big &lt;whale&gt;</b></a>')  # label only, no address
 
 
 def test_default_label_does_not_repeat_the_address():

@@ -46,10 +46,17 @@ def short_addr(addr: str) -> str:
 
 
 def wallet_link(label: str, address: str) -> str:
-    """The wallet's name and short address, both linking to its Hypurrscan page."""
-    short = short_addr(address)
-    name = f"<b>{html.escape(label)}</b> · {short}" if label != short else f"<b>{short}</b>"
-    return f'<a href="{ADDRESS_URL.format(address)}">{name}</a>'
+    """The wallet's label, linking to its Hypurrscan page. Unlabelled wallets show their short address."""
+    return f'<a href="{ADDRESS_URL.format(address)}"><b>{html.escape(label)}</b></a>'
+
+
+def trade_icon(direction: str, is_buy: bool) -> str:
+    """Two circles for opening a position, one for closing: green for long, red for short."""
+    if direction.startswith("Open ") or " > " in direction:  # "Long > Short" flips into a new position
+        return "🟢🟢" if is_buy else "🔴🔴"
+    if direction.startswith("Close "):
+        return "🟢" if direction.endswith("Long") else "🔴"
+    return "🟢" if is_buy else "🔴"
 
 
 def humanize_status(status: str) -> str:
@@ -96,7 +103,9 @@ def _pnl(value: Decimal) -> str:
 
 def format_fill(g: dict, coin_name) -> str:
     avg_px = g["notional"] / g["sz"] if g["sz"] else Decimal(0)
-    icon = "🔥" if g["liq"] else ("📈" if g["side"] == "B" else "📉")
+    icon = trade_icon(g["dir"], g["side"] == "B")
+    if g["liq"]:
+        icon = "🔥" + icon
     parts = [
         f"{icon} <b>{html.escape(g['dir'])} {num(g['sz'])} {html.escape(coin_name(g['coin']))}</b> "
         f"@ <b>{_price(avg_px)}</b>"
@@ -222,7 +231,6 @@ def format_update(label: str, address: str, fills: list[dict], orders: list[Orde
     agg = _aggregate_fills(fills)
     if agg:
         lines.append("")
-        lines.append(f"<u>Fills ({len(fills)})</u>")
         lines.extend(format_fill(g, coin_name) for g in agg)
     if orders:
         lines.append("")
@@ -334,8 +342,9 @@ def _delay(seconds: float) -> str:
 
 def format_binance_trade(t: dict) -> str:
     notional = t["qty"] * t["price"]
+    dir_ = binance_direction(t["side"], t["position_side"])
     head = (
-        f"{'📈' if t['side'] == 'BUY' else '📉'} <b>{binance_direction(t['side'], t['position_side'])} {num(t['qty'])} "
+        f"{trade_icon(dir_, t['side'] == 'BUY')} <b>{dir_} {num(t['qty'])} "
         f"{html.escape(t['base'])}</b> @ <b>{_price(t['price'])}</b>"
     )
     details = [f"<b>${num(notional, 2)}</b>"]

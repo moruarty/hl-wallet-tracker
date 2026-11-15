@@ -64,8 +64,20 @@ def test_fill_colors_its_pnl_and_bolds_numbers():
     fill = {"coin": "ETH", "px": "3000", "sz": "2", "side": "B", "dir": "Close Short", "oid": 1,
             "tid": 1, "time": 1, "closedPnl": "-12.5", "fee": "0.1", "feeToken": "USDC"}
     text = format_update("me", WALLET, [fill], [], NAMES)[0]
-    assert "📈 <b>Close Short 2 ETH</b> @ <b>3,000</b>" in text
+    assert "🔴 <b>Close Short 2 ETH</b> @ <b>3,000</b>" in text
     assert "<b>$6,000</b> · 🔴 PnL <b>-12.5</b> · fee 0.1 USDC" in text
+    assert "Fills" not in text
+
+
+def test_trade_circles_show_direction_at_a_glance():
+    from tracker.formatting import trade_icon
+    assert trade_icon("Open Long", True) == "🟢🟢" and trade_icon("Open Short", False) == "🔴🔴"
+    assert trade_icon("Close Long", False) == "🟢" and trade_icon("Close Short", True) == "🔴"
+    assert trade_icon("Long > Short", False) == "🔴🔴" and trade_icon("Short > Long", True) == "🟢🟢"
+    assert trade_icon("Buy", True) == "🟢" and trade_icon("Sell", False) == "🔴"
+    liq = {"coin": "ETH", "px": "3000", "sz": "1", "side": "A", "dir": "Close Long", "oid": 1, "tid": 1,
+           "time": 1, "closedPnl": "-50", "fee": "0", "feeToken": "USDC", "liquidation": {"method": "market"}}
+    assert "🔥🟢 <b>Close Long 1 ETH</b>" in format_update("me", WALLET, [liq], [], NAMES)[0]
 
 
 def test_largest_position_comes_first():

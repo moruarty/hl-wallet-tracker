@@ -131,7 +131,7 @@ def test_message_shows_direction_value_pnl_and_delay():
          "time": NOW, "delay": 14.2, "missed": False, "more": False}
     text = format_binance_update("熬鹰资本", PID, [t])[0]
     assert f'href="https://www.binance.com/en/copy-trading/lead-details/{PID}"' in text
-    assert "📉 <b>Close Long 14.837 BTC</b> @ <b>69,984.8</b>" in text
+    assert "🟢 <b>Close Long 14.837 BTC</b> @ <b>69,984.8</b>" in text
     assert "🟢 PnL <b>+27,836.56</b> · market · seen after 14s" in text
 
 
