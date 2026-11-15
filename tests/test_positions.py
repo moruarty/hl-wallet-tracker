@@ -30,18 +30,18 @@ def test_position_details_and_totals_across_dexes():
     text = format_positions("me", WALLET, [state("1000", SHORT_ETH), state("500", LONG_XYZ)], NAMES)[0]
     assert "<u>Positions (2)</u>" in text
     assert "Value <b>$5,329,490</b> · 🔴 PnL <b>-29,478.63</b> · Perp account <b>$1,500</b>" in text
-    assert "📉 <b>Short 1,000 ETH</b> · <b>$2,321,000</b> · 25x cross" in text
+    assert "🔴 <b>Short 1,000 ETH</b> · <b>$2,321,000</b> · 25x cross" in text
     assert "Entry <b>2,283.87</b> · Mark <b>2,321</b>\n" in text
     assert "🔴 PnL <b>-37,120.02</b> (-40.6%)" in text
     assert "🟠 Liq <b>6,201.65</b>" in text and "167" not in text  # distance is hidden when it's over 100%
-    assert "📈 <b>Long 7,000 xyz:COIN</b> · <b>$3,008,490</b> · 10x isolated" in text
+    assert "🟢 <b>Long 7,000 xyz:COIN</b> · <b>$3,008,490</b> · 10x isolated" in text
     assert "🟢 PnL <b>+7,641.39</b> (+7.6%)" in text
 
 
 def test_color_follows_profit_not_direction():
     winning_short = dict(SHORT_ETH, unrealizedPnl="500", returnOnEquity="0.1")
     text = format_positions("me", WALLET, [state("1", winning_short)], NAMES)[0]
-    assert "📉 <b>Short" in text and "🟢 PnL <b>+500</b>" in text and "🔴" not in text
+    assert "🔴 <b>Short" in text and "🟢 PnL <b>+500</b>" in text and "🔴 PnL" not in text
 
 
 def test_tiny_pnl_keeps_its_digits_and_fill_price_is_readable():

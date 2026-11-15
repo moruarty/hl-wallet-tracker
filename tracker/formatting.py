@@ -286,7 +286,7 @@ def format_position(position: dict, coin_name) -> str:
     mark = value / abs(size)
     leverage = position.get("leverage") or {}
     head = (
-        f"{'📈' if size > 0 else '📉'} <b>{'Long' if size > 0 else 'Short'} {num(abs(size))} "
+        f"{'🟢' if size > 0 else '🔴'} <b>{'Long' if size > 0 else 'Short'} {num(abs(size))} "
         f"{html.escape(coin_name(position['coin']))}</b> · <b>${num(value, 2)}</b>"
     )
     if leverage:
