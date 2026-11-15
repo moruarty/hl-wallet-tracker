@@ -92,7 +92,7 @@ A Telegram bot that watches Hyperliquid wallets and posts:
 - **Orders**: new, canceled, triggered and rejected orders, labelled as limit, reduce-only limit,
   take profit or stop loss (market/limit, with trigger price).
 - **Fills**: every fill, with direction (Open Long, Close Short, ...), average price, notional,
-  closed PnL and fees. Liquidations are flagged.
+  and closed PnL. Liquidations are flagged.
 
 Events are **batched every 5 seconds** (configurable): one message per wallet per batch, and partial
 fills of the same order are merged into one line, so a burst of fills doesn't spam the chat.

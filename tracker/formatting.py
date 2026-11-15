@@ -77,12 +77,10 @@ def _aggregate_fills(fills: list[dict]) -> list[dict]:
         if g is None:
             groups[key] = g = {
                 "coin": f["coin"], "dir": f["dir"], "side": f["side"], "sz": Decimal(0),
-                "notional": Decimal(0), "fee": Decimal(0), "pnl": Decimal(0), "count": 0,
-                "feeToken": f.get("feeToken", "USDC"), "liq": False, "crossed": f.get("crossed"),
+                "notional": Decimal(0), "pnl": Decimal(0), "count": 0, "liq": False, "crossed": f.get("crossed"),
             }
         g["sz"] += sz
         g["notional"] += sz * px
-        g["fee"] += Decimal(f.get("fee", "0"))
         g["pnl"] += Decimal(f.get("closedPnl", "0"))
         g["count"] += 1
         g["liq"] = g["liq"] or bool(f.get("liquidation"))
@@ -115,7 +113,6 @@ def format_fill(g: dict, coin_name) -> str:
     details = [f"<b>${num(g['notional'], 2)}</b>"]
     if g["pnl"] != 0:
         details.append(_pnl(g["pnl"]))
-    details.append(f"fee {num(g['fee'], 4)} {html.escape(g['feeToken'])}")
     if g["liq"]:
         details.append("liquidation")
     return parts[0] + "\n      " + " · ".join(details)

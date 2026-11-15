@@ -65,7 +65,8 @@ def test_fill_colors_its_pnl_and_bolds_numbers():
             "tid": 1, "time": 1, "closedPnl": "-12.5", "fee": "0.1", "feeToken": "USDC"}
     text = format_update("me", WALLET, [fill], [], NAMES)[0]
     assert "🔴 <b>Close Short 2 ETH</b> @ <b>3,000</b>" in text
-    assert "<b>$6,000</b> · 🔴 PnL <b>-12.5</b> · fee 0.1 USDC" in text
+    assert "<b>$6,000</b> · 🔴 PnL <b>-12.5</b>" in text
+    assert "fee" not in text and "USDC" not in text
     assert "Fills" not in text
 
 
