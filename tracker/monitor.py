@@ -4,11 +4,12 @@
     python -m tracker.monitor --test  send a test message to the webhook
 
 It runs on the same VM as the bot, so it can't report the whole VM being down. It checks that the
-process is running, not that it's doing useful work.
+process is running, not that it's doing useful work. It also warns when the VM's disk is getting full.
 """
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -22,6 +23,10 @@ SERVICE = "hl-tracker"
 STATE_PATH = "data/monitor_state.json"
 DOWN_CHECKS_BEFORE_ALERT = 2  # one failed check can just be a deploy or a reboot
 REMIND_EVERY = 3600  # seconds between repeat alerts while something is still wrong
+DISK_PATH = "/"
+DISK_ALERT_AT = 0.80  # warn when the disk is this full
+DISK_CLEAR_AT = 0.75  # and say it's fine again below this, so hovering near 80% doesn't flap
+DISK_REMIND_EVERY = 24 * 3600  # a disk fills slowly, so once a day is enough
 LOGS_HINT = f"Logs: `sudo journalctl -u {SERVICE} -n 30 --no-pager`"
 
 
@@ -69,6 +74,26 @@ def check(status: dict, state: dict, now: float, mention: str = "") -> tuple[lis
     return alerts, state
 
 
+def check_disk(used: float, state: dict, now: float, mention: str = "") -> tuple[list[str], dict]:
+    """`used` is the fraction of the disk in use, from 0 to 1."""
+    state = dict(state)
+    prefix = f"{mention} " if mention else ""
+    last = state.get("disk_alerted_at")
+    if used >= DISK_ALERT_AT and (last is None or now - last >= DISK_REMIND_EVERY):
+        state["disk_alerted_at"] = now
+        return [f"🟠 {prefix}**The VM's disk is {used:.0%} full.** "
+                "Check what's using it with `sudo du -xh / --max-depth=2 | sort -h | tail`"], state
+    if used < DISK_CLEAR_AT and last is not None:
+        state["disk_alerted_at"] = None
+        return [f"🟢 **The VM's disk is back to {used:.0%} full.**"], state
+    return [], state
+
+
+def disk_used(path: str = DISK_PATH) -> float:
+    usage = shutil.disk_usage(path)
+    return usage.used / usage.total
+
+
 def send(url: str, text: str) -> None:
     request = urllib.request.Request(
         url, json.dumps({"content": text}).encode(),
@@ -101,7 +126,13 @@ def run_check(url: str, mention: str, path: str = STATE_PATH) -> int:
     except (OSError, subprocess.SubprocessError):
         log.exception("Could not read the status of %s", SERVICE)
         status = {"UnitFileState": "enabled", "ActiveState": "unknown"}
-    alerts, new = check(status, old, time.time(), mention)
+    now = time.time()
+    alerts, new = check(status, old, now, mention)
+    try:
+        disk_alerts, new = check_disk(disk_used(), new, now, mention)
+        alerts += disk_alerts
+    except OSError:
+        log.exception("Could not read the disk usage")
     try:
         for text in alerts:
             send(url, text)

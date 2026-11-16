@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 from tracker import monitor
-from tracker.monitor import REMIND_EVERY, check, run_check, send
+from tracker.monitor import DISK_REMIND_EVERY, REMIND_EVERY, check, check_disk, run_check, send
 
 URL = "http://unused"
 
@@ -77,10 +77,29 @@ def test_mention_is_on_problems_but_not_recovery():
     assert "<@123>" not in check(status(), {"down_alerted_at": 1}, 1000, "<@123>")[0][0]
 
 
+def test_disk_warning_repeats_daily_and_clears_with_a_margin():
+    assert check_disk(0.5, {}, 0)[0] == []
+    alerts, state = check_disk(0.83, {}, 0, "<@1>")
+    assert "83% full" in alerts[0] and "<@1>" in alerts[0]
+    assert check_disk(0.9, state, 3600)[0] == []
+    assert "90% full" in check_disk(0.9, state, DISK_REMIND_EVERY)[0][0]
+    assert check_disk(0.78, state, 100)[0] == []  # between the two thresholds: no flapping
+    alerts, state = check_disk(0.6, state, 200)
+    assert "back to 60%" in alerts[0] and check_disk(0.6, state, 300)[0] == []
+
+
+def test_disk_and_service_alerts_go_out_together(tmp_path):
+    path = str(tmp_path / "state.json")
+    with patch.object(monitor, "read_status", return_value=status()),             patch.object(monitor, "disk_used", return_value=0.95), patch.object(monitor, "send") as sent:
+        assert run_check(URL, "", path) == 0
+        run_check(URL, "", path)
+    assert sent.call_count == 1 and "95% full" in sent.call_args.args[1]
+
+
 def test_failed_delivery_is_retried_on_the_next_check(tmp_path):
     path = str(tmp_path / "state.json")
     monitor.save_state(path, {"down_checks": 1})
-    with patch.object(monitor, "read_status", return_value=status("failed")):
+    with patch.object(monitor, "read_status", return_value=status("failed")),             patch.object(monitor, "disk_used", return_value=0.1):
         with patch.object(monitor, "send", side_effect=OSError("no network")):
             assert run_check(URL, "", path) == 1
         with patch.object(monitor, "send") as sent:
@@ -92,7 +111,7 @@ def test_failed_delivery_is_retried_on_the_next_check(tmp_path):
 def test_unreadable_status_counts_as_down(tmp_path):
     path = str(tmp_path / "state.json")
     monitor.save_state(path, {"down_checks": 1})
-    with patch.object(monitor, "read_status", side_effect=OSError("no systemctl")), patch.object(monitor, "send") as sent:
+    with patch.object(monitor, "read_status", side_effect=OSError("no systemctl")),             patch.object(monitor, "disk_used", return_value=0.1), patch.object(monitor, "send") as sent:
         run_check(URL, "", path)
     assert "unknown" in sent.call_args.args[1]
 

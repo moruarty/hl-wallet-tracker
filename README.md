@@ -64,7 +64,8 @@ sudo journalctl -u hl-tracker -n 30 --no-pager
 
 **Downtime alerts:** a monitor on the VM checks the bot every minute and posts to `DISCORD_WEBHOOK_URL` from
 the VM's `.env` if it's down for two checks in a row, if it's still down each hour after that, if it crashes
-and restarts, and when it recovers. `disable --now` counts as turning it off on purpose, so that doesn't alert,
+and restarts, and when it recovers. It also warns once a day while the VM's disk is over 80% full, and says
+when it's back under 75%. `disable --now` counts as turning it off on purpose, so that doesn't alert,
 but a plain `systemctl stop` does. Running on the same VM, it can't report the whole VM being down, and it
 checks that the process is running rather than that messages are getting through. To send a test message, on
 the VM:
