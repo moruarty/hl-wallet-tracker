@@ -11,11 +11,11 @@ from telegram.constants import ParseMode
 from telegram.error import Forbidden, RetryAfter, TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, filters
 
-from .binance import BinanceClient, BinanceError, BinancePoller, latency_summary
+from .binance import BinanceClient, BinanceError, BinancePoller, latency_summary, load_positions, now_ms
 from .config import Config
 from .engine import Engine, OrderEvent
 from .formatting import (
-    CoinNames, binance_link, format_binance_update, format_open_orders, format_order_details, format_positions,
+    CoinNames, binance_link, format_binance_positions, format_binance_update, format_open_orders, format_order_details, format_positions,
     format_update, short_addr, wallet_link,
 )
 from .hyperliquid import InfoClient
@@ -40,6 +40,7 @@ HELP = (
     "/positions [wallet or label] · current open positions\n"
     "/track_binance &lt;name, ID or profile link&gt; [label] · track a Binance copy-trading lead trader\n"
     "/untrack_binance &lt;ID or label&gt; · stop tracking a Binance trader\n"
+    "/binance_positions [ID or label] · a Binance trader's open positions\n"
     "/binance_delay · how long Binance trades take to show up\n"
     "/chatid · show this chat's ID\n\n"
     "Hyperliquid: new/canceled/triggered orders (limits, take profits, stop losses) and fills, "
@@ -71,6 +72,7 @@ class TrackerBot:
             ("untrack", self.cmd_untrack), ("listwallets", self.cmd_list), ("orders", self.cmd_orders),
             ("positions", self.cmd_positions), ("track_binance", self.cmd_track_binance),
             ("untrack_binance", self.cmd_untrack_binance), ("binance_delay", self.cmd_binance_delay),
+            ("binance_positions", self.cmd_binance_positions),
         ]:
             self.app.add_handler(CommandHandler(name, fn, filters=allowed))
         # /chatid works everywhere so you can find the ID to put in ALLOWED_CHAT_IDS.
@@ -95,6 +97,7 @@ class TrackerBot:
             BotCommand("positions", "Open positions: /positions [wallet or label]"),
             BotCommand("track_binance", "Track a Binance lead trader: /track_binance <name, ID or link> [label]"),
             BotCommand("untrack_binance", "Stop tracking a Binance trader: /untrack_binance <ID or label>"),
+            BotCommand("binance_positions", "A Binance trader's open positions: /binance_positions [ID or label]"),
             BotCommand("binance_delay", "How long Binance trades take to show up"),
             BotCommand("chatid", "Show this chat's ID"),
             BotCommand("help", "Help"),
@@ -330,6 +333,27 @@ class TrackerBot:
         self._sync_binance()
         names = ", ".join(f"<b>{html.escape(t.label)}</b>" for t in removed)
         await self._reply(update, f"Stopped tracking {names}.")
+
+    async def cmd_binance_positions(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        traders = self.storage.binance_for_chat(update.effective_chat.id)
+        key = " ".join(ctx.args).strip().lower()
+        if key:
+            traders = [t for t in traders if key in (t.address, t.label.lower())]
+        if not traders:
+            await self._reply(update, "No Binance trader in this chat matches that." if key else
+                              "No Binance traders tracked in this chat. Use /track_binance first.")
+            return
+        for t in traders:
+            try:
+                show = bool((await self.binance.detail(t.address)).get("positionShow"))
+                positions, how = await load_positions(self.binance, t.address, show)
+            except Exception:
+                log.exception("Loading Binance positions failed")
+                await self._reply(update, f"Couldn't load positions for {html.escape(t.label)} right now. "
+                                          "Binance may be busy; try again in a minute.")
+                continue
+            for text in format_binance_positions(t.label, t.address, positions, how, now_ms()):
+                await self._reply(update, text)
 
     async def cmd_binance_delay(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         stats = latency_summary()

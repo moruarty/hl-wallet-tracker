@@ -220,3 +220,91 @@ def test_delay_command(tmp_path):
     with patch("tracker.bot.latency_summary", return_value={"count": 4, "median": 9.0, "p90": 21.0, "max": 40.0}):
         text = run(bot, bot.cmd_binance_delay)
     assert "Typical <b>9s</b>" in text and "within <b>21s</b>" in text
+
+
+# ---- open positions ---------------------------------------------------------------------
+
+from tracker.binance import rebuild_positions, shown_positions  # noqa: E402
+from tracker.formatting import format_binance_positions  # noqa: E402
+
+
+def closed(symbol, side, closed_ms, status="All Closed", opened=1, avg="100"):
+    return {"symbol": symbol, "side": side, "status": status, "opened": opened, "closed": closed_ms,
+            "avgCost": avg, "maxOpenInterest": 1, "closedVolume": 1}
+
+
+def by_coin(positions):
+    return {(p["base"], p["long"]): p for p in positions}
+
+
+def test_open_long_is_added_up_from_trades_since_the_last_one_ended():
+    trades = [
+        trade(100, qty="5", price="60000"),  # belongs to a position that ended at 150
+        trade(160, qty="1", price="70000"),
+        trade(170, qty="3", price="74000"),
+        trade(180, side="SELL", qty="2", price="75000"),  # a partial close keeps the entry price
+    ]
+    btc = by_coin(rebuild_positions(trades, [closed("BTCUSDT", "Long", 150)]))[("BTC", True)]
+    assert btc["qty"] == 2 and btc["entry"] == 73000 and btc["opened"] == 160
+
+
+def test_fully_closed_and_reopened_short():
+    trades = [trade(1, side="SELL", pos="SHORT", qty="2"), trade(2, side="BUY", pos="SHORT", qty="2"),
+              trade(3, side="SELL", pos="SHORT", qty="4", price="50")]
+    eth = rebuild_positions(trades, [])
+    assert [(p["long"], p["qty"], p["entry"], p["opened"]) for p in eth] == [(False, 4, 50, 3)]
+
+
+def test_one_way_mode_flips_from_long_to_short():
+    trades = [trade(1, pos="BOTH", qty="3", price="10"), trade(2, side="SELL", pos="BOTH", qty="5", price="12")]
+    (p,) = rebuild_positions(trades, [])
+    assert not p["long"] and p["qty"] == 2 and p["entry"] == 12
+
+
+def test_position_older_than_the_trades_read_is_listed_with_an_unknown_size():
+    # Closing more than the trades opened means it started before them, so the sum is wrong.
+    trades = [trade(5, side="SELL", qty="4")]
+    history = [closed("BTCUSDT", "Long", None, status="Partially Closed", opened=1, avg="65000")]
+    (p,) = rebuild_positions(trades, history)
+    assert p["qty"] is None and p["entry"] == 65000 and p["partly_closed"]
+    assert rebuild_positions(trades, []) == []  # without the history entry there's nothing to say
+
+
+def test_nothing_open_when_everything_closed():
+    trades = [trade(1, qty="2"), trade(2, side="SELL", qty="2")]
+    assert rebuild_positions(trades, [closed("BTCUSDT", "Long", 2)]) == []
+
+
+def test_shown_positions_keep_mark_and_pnl():
+    raw = [{"symbol": "ETHUSDT", "positionAmount": "-9.755", "entryPrice": "2053.01", "markPrice": "1811.2",
+            "unrealizedProfit": "2358.81", "leverage": 5, "positionSide": "SHORT"},
+           {"symbol": "XRPUSDT", "positionAmount": "0", "entryPrice": "0", "positionSide": "LONG"}]
+    (p,) = shown_positions(raw)
+    assert not p["long"] and p["qty"] == Decimal("9.755") and p["mark"] == Decimal("1811.2")
+
+
+def test_positions_message():
+    rebuilt = rebuild_positions([trade(NOW - 3 * 3600_000, qty="2", price="70000")], [])
+    text = format_binance_positions("熬鹰资本", PID, rebuilt, {"shown": False, "cut_off": True}, NOW)[0]
+    assert "🟢 <b>Long 2 BTC</b> · <b>$140,000</b> at entry" in text
+    assert "Entry <b>70,000</b> · opened 3 h ago" in text
+    assert "hides positions" in text and "some sizes may be off" in text
+    shown = shown_positions([{"symbol": "ETHUSDT", "positionAmount": "-1", "entryPrice": "2000",
+                              "markPrice": "1800", "unrealizedProfit": "200", "leverage": 5, "positionSide": "SHORT"}])
+    text = format_binance_positions("x", PID, shown, {"shown": True, "cut_off": False}, NOW)[0]
+    assert "🔴 <b>Short 1 ETH</b> · <b>$1,800</b> · 5x" in text and "🟢 PnL <b>+200</b>" in text
+    assert "hides" not in text
+    assert "No open positions" in format_binance_positions("x", PID, [], {"shown": True, "cut_off": False}, NOW)[0]
+
+
+def test_positions_command(tmp_path):
+    bot = binance_bot(tmp_path)
+    assert handles(bot, ALLOWED, "/binance_positions") and not handles(bot, OTHER, "/binance_positions")
+    assert "No Binance traders tracked" in run(bot, bot.cmd_binance_positions)
+    bot.storage.track_binance(ALLOWED, PID, "eagle")
+    with patch("tracker.bot.load_positions", AsyncMock(return_value=([], {"shown": False, "cut_off": False}))) as load:
+        assert "No open positions" in run(bot, bot.cmd_binance_positions, "EAGLE")
+    load.assert_awaited_once_with(bot.binance, PID, False)
+    assert "matches" in run(bot, bot.cmd_binance_positions, "nobody")
+    with patch("tracker.bot.load_positions", AsyncMock(side_effect=BinanceError("busy"))):
+        assert "Couldn't load positions for eagle" in run(bot, bot.cmd_binance_positions)

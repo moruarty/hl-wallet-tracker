@@ -361,6 +361,66 @@ def format_binance_update(label: str, portfolio_id: str, trades: list[dict]) -> 
     return split_message(lines)
 
 
+def _ago(ms: int, now_ms: int) -> str:
+    seconds = max(now_ms - ms, 0) / 1000
+    if seconds < 3600:
+        return f"{seconds / 60:.0f} min ago"
+    if seconds < 2 * 86400:
+        return f"{seconds / 3600:.0f} h ago"
+    return f"{seconds / 86400:.0f} days ago"
+
+
+def format_binance_position(p: dict, now_ms: int) -> str:
+    side = "Long" if p["long"] else "Short"
+    dot = "🟢" if p["long"] else "🔴"
+    if p["qty"] is None:
+        head = f"{dot} <b>{side} {html.escape(p['base'])}</b> · size unknown"
+    else:
+        head = f"{dot} <b>{side} {num(p['qty'])} {html.escape(p['base'])}</b>"
+        price = p["mark"] if p["mark"] is not None else p["entry"]
+        if price is not None:
+            head += f" · <b>${num(p['qty'] * price, 2)}</b>" + ("" if p["mark"] is not None else " at entry")
+    if p["leverage"]:
+        head += f" · {html.escape(str(p['leverage']))}x"
+    lines = [head]
+    prices = []
+    if p["entry"] is not None:
+        prices.append(f"Entry <b>{_price(p['entry'])}</b>")
+    if p["mark"] is not None:
+        prices.append(f"Mark <b>{_price(p['mark'])}</b>")
+    if p["opened"]:
+        prices.append(f"opened {_ago(p['opened'], now_ms)}")
+    if prices:
+        lines.append(" · ".join(prices))
+    if p["pnl"] is not None:
+        lines.append(_pnl(p["pnl"]))
+    if p.get("partly_closed") and p["qty"] is None:
+        lines.append("partly closed since; it opened before the trades the bot can read")
+    return "\n      ".join(lines)
+
+
+def format_binance_positions(label: str, portfolio_id: str, positions: list[dict], how: dict, now_ms: int) -> list[str]:
+    header = binance_link(label, portfolio_id)
+    source = "shown by the trader" if how["shown"] else "worked out from their trades"
+    if not positions:
+        lines = [f"{header}\nNo open positions ({source})."]
+    else:
+        def size(p):
+            price = p["mark"] if p["mark"] is not None else p["entry"]
+            return p["qty"] * price if p["qty"] is not None and price is not None else Decimal(-1)
+        positions = sorted(positions, key=size, reverse=True)
+        lines = [header, f"<u>Positions ({len(positions)})</u> · {source}"]
+        for p in positions:
+            lines += ["", format_binance_position(p, now_ms)]
+    if not how["shown"]:
+        lines += ["", "<i>This trader hides positions, so these are rebuilt from their completed trades of the "
+                      "last 30 days. A position opened before that and never partly closed won't show.</i>"]
+        if how["cut_off"]:
+            lines.append("<i>They trade a lot, so only their most recent trades were read and some sizes "
+                         "may be off.</i>")
+    return split_message(lines)
+
+
 def format_open_orders(
     label: str, address: str, orders: list[dict], coin_name, expand: bool = False
 ) -> list[str]:

@@ -121,6 +121,7 @@ Access is gated by chat ID: commands only work in chats listed in `ALLOWED_CHAT_
 | `/positions [wallet or label]` | Current perp positions with entry, mark, value, PnL and liquidation price. |
 | `/track_binance <name, ID or link> [label]` | Track a Binance copy-trading lead trader by exact name, portfolio ID or profile link. |
 | `/untrack_binance <ID or label>` | Stop tracking a Binance trader in this chat. |
+| `/binance_positions [ID or label]` | A Binance trader's open positions: as shown by the trader, or rebuilt from their trades when they hide them. |
 | `/binance_delay` | How long Binance trades take to reach the bot: typical, 9 in 10, and slowest. |
 | `/chatid` | Shows the chat's ID. Works in any chat so you can set up `ALLOWED_CHAT_IDS`. |
 | `/help` | Command list. |
@@ -147,6 +148,12 @@ Each chat has its own wallet list and labels. If two chats track the same wallet
 - Only completed trades are public: pending orders and TP/SL aren't, and open positions only when the trader
   shows them. Each alert says how long after the trade it was seen; every delay is also written to
   `data/binance_latency.csv`, and `/binance_delay` summarises them.
+- `/binance_positions` uses the trader's own position list when they show it. Most hide it, so the bot rebuilds
+  it: Binance's position history says when each coin's last position fully closed, and the trades since
+  then add up to what's open now. This matched traders who show their positions exactly. It reads the
+  last 30 days of trades (up to 600), so a position opened before that shows with an unknown size if it's
+  been partly closed, and not at all if it hasn't. Values are at the entry price, since mark prices aren't
+  available for hidden positions.
 - Trades made while the bot was offline (up to a day back) are reported after a restart, marked as such.
 - Binance's official API refuses US addresses, including a US-region VM. The copy-trading endpoints
   worked from one when this was written, but that could change.

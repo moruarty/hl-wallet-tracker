@@ -27,6 +27,10 @@ LOOKBACK_MS = 24 * 3600 * 1000  # trades older than this are never reported
 FORGET_AFTER_MS = 2 * LOOKBACK_MS
 GAP_BETWEEN_TRADERS = 1.0  # seconds; bursts of requests get "system busy"
 LATENCY_PATH = "data/binance_latency.csv"
+HISTORY_PAGE_SIZE = 50
+HISTORY_PAGES = 3  # closed positions read to find when each coin's last position ended
+REBUILD_LOOKBACK_MS = 30 * 24 * 3600 * 1000  # trades read to rebuild hidden positions
+REBUILD_MAX_PAGES = 30  # 600 trades; a very active trader's older trades are cut off
 
 
 class BinanceError(Exception):
@@ -76,6 +80,17 @@ class BinanceClient:
         data = await self._request("POST", "/lead-portfolio/order-history", {
             "portfolioId": portfolio_id, "startTime": start_ms, "endTime": end_ms,
             "pageNumber": page, "pageSize": PAGE_SIZE,
+        })
+        return (data or {}).get("list") or []
+
+    async def positions(self, portfolio_id: str) -> list[dict]:
+        """Open positions, only filled in when the trader shows them."""
+        return await self._request("GET", f"/lead-data/positions?portfolioId={portfolio_id}") or []
+
+    async def position_history(self, portfolio_id: str, page: int = 1) -> list[dict]:
+        """Positions newest first. Lists a position once some of it is closed, never while it's only open."""
+        data = await self._request("POST", "/lead-portfolio/position-history", {
+            "portfolioId": portfolio_id, "pageNumber": page, "pageSize": HISTORY_PAGE_SIZE, "sort": "OPENING",
         })
         return (data or {}).get("list") or []
 
@@ -234,3 +249,139 @@ def latency_summary(path: str = LATENCY_PATH, last: int = 500) -> dict | None:
         return None
     pick = lambda q: delays[min(int(q * len(delays)), len(delays) - 1)]
     return {"count": len(delays), "median": pick(0.5), "p90": pick(0.9), "max": delays[-1]}
+
+
+# ---- open positions ---------------------------------------------------------------------
+#
+# Most lead traders hide their open positions, so they're rebuilt from public data instead.
+# Binance's position history lists a position once part of it is closed, and gives the time each
+# fully closed position ended. A position that's only been opened isn't listed anywhere, but every
+# trade is: so for each coin and side, the trades since its last position ended add up to what's
+# open now. Checked against traders who do show their positions, it matched them exactly.
+
+def base_asset(symbol: str) -> str:
+    for quote in ("USDT", "USDC", "BUSD"):
+        if symbol.endswith(quote) and len(symbol) > len(quote):
+            return symbol[: -len(quote)]
+    return symbol
+
+
+def _position(symbol: str, long: bool, qty, entry, opened, **extra) -> dict:
+    return {"symbol": symbol, "base": base_asset(symbol), "long": long, "qty": qty, "entry": entry,
+            "opened": opened, "mark": None, "pnl": None, "leverage": None, **extra}
+
+
+def shown_positions(raw: list[dict]) -> list[dict]:
+    """Positions from a trader who shows them, in the same shape as rebuilt ones."""
+    out = []
+    for p in raw:
+        amount = dec(p.get("positionAmount") or 0)
+        if amount == 0:
+            continue
+        side = p.get("positionSide")
+        long = side == "LONG" or (side == "BOTH" and amount > 0)
+        out.append(_position(
+            p["symbol"], long, abs(amount), dec(p["entryPrice"]), None,
+            mark=dec(p["markPrice"]) if p.get("markPrice") is not None else None,
+            pnl=dec(p["unrealizedProfit"]) if p.get("unrealizedProfit") is not None else None,
+            leverage=p.get("leverage"),
+        ))
+    return out
+
+
+def rebuild_positions(trades: list[dict], history: list[dict]) -> list[dict]:
+    """Open positions worked out from completed trades and position history.
+
+    A size of None means the position is open but started before the trades that were read.
+    """
+    last_end: dict[tuple, int] = {}
+    partly_closed = {}
+    for h in history:
+        key = (h["symbol"], h["side"].upper())
+        if h["status"] == "All Closed":
+            last_end[key] = max(last_end.get(key, 0), h.get("closed") or 0)
+        else:
+            partly_closed.setdefault(key, h)
+
+    # Per (symbol, LONG/SHORT/BOTH): signed size, cost of what's open, when it opened, and whether
+    # it closed more than the trades opened, which means it started before them.
+    books: dict[tuple, dict] = {}
+    for t in sorted(trades, key=lambda t: t["orderTime"]):
+        side, symbol = t["positionSide"], t["symbol"]
+        if side == "BOTH":  # one-way mode: buys and sells move one position between long and short
+            start = max(last_end.get((symbol, "LONG"), 0), last_end.get((symbol, "SHORT"), 0))
+            delta = dec(t["executedQty"]) * (1 if t["side"] == "BUY" else -1)
+        else:
+            start = last_end.get((symbol, side), 0)
+            opening = (t["side"] == "BUY") == (side == "LONG")
+            delta = dec(t["executedQty"]) * (1 if opening else -1)
+        if t["orderTime"] <= start:
+            continue
+        book = books.setdefault((symbol, side), {"size": Decimal(0), "cost": Decimal(0), "opened": None, "early": False})
+        price, size = dec(t["avgPrice"]), book["size"]
+        if size == 0 or (size > 0) == (delta > 0):
+            book["cost"] += abs(delta) * price
+            book["opened"] = book["opened"] or t["orderTime"]
+            book["size"] = size + delta
+        elif abs(delta) <= abs(size):
+            book["cost"] *= (abs(size) - abs(delta)) / abs(size)
+            book["size"] = size + delta
+            if book["size"] == 0:
+                book["opened"] = None
+        else:  # flipped through zero; what's left over opens the other way at this price
+            book["size"] = size + delta
+            book["cost"] = abs(book["size"]) * price
+            book["opened"] = t["orderTime"]
+        if side != "BOTH" and book["size"] < 0:
+            book["early"] = True
+
+    out = []
+    seen = set()
+    for (symbol, side), book in books.items():
+        if book["early"]:
+            continue
+        if book["size"] == 0:
+            continue
+        long = side == "LONG" or (side == "BOTH" and book["size"] > 0)
+        qty = abs(book["size"])
+        out.append(_position(symbol, long, qty, book["cost"] / qty, book["opened"]))
+        seen.add((symbol, "LONG" if long else "SHORT"))
+    for key, h in partly_closed.items():
+        if key not in seen:
+            out.append(_position(key[0], key[1] == "LONG", None, dec(h["avgCost"]) if h.get("avgCost") else None,
+                                 h.get("opened"), partly_closed=True))
+    return out
+
+
+async def _retry(call, *args, attempts: int = 4, wait: float = 2.0):
+    """Binance answers "system busy" now and then, especially alongside the poller's checks."""
+    for attempt in range(attempts):
+        try:
+            return await call(*args)
+        except BinanceError:
+            if attempt == attempts - 1:
+                raise
+            await asyncio.sleep(wait * (attempt + 1))
+
+
+async def load_positions(client: BinanceClient, portfolio_id: str, show: bool) -> tuple[list[dict], dict]:
+    """Open positions and how they were found: {"shown": bool, "cut_off": bool}."""
+    if show:
+        return shown_positions(await _retry(client.positions, portfolio_id)), {"shown": True, "cut_off": False}
+    history = []
+    for page in range(1, HISTORY_PAGES + 1):
+        batch = await _retry(client.position_history, portfolio_id, page)
+        history.extend(batch)
+        if len(batch) < HISTORY_PAGE_SIZE:
+            break
+        await asyncio.sleep(GAP_BETWEEN_TRADERS)
+    now = now_ms()
+    trades, cut_off = [], True
+    for page in range(1, REBUILD_MAX_PAGES + 1):
+        batch = await _retry(client.trades, portfolio_id, now - REBUILD_LOOKBACK_MS, now, page)
+        trades.extend(batch)
+        if len(batch) < PAGE_SIZE:
+            cut_off = False
+            break
+        await asyncio.sleep(GAP_BETWEEN_TRADERS)
+    return rebuild_positions(trades, history), {"shown": False, "cut_off": cut_off}
